@@ -297,7 +297,7 @@ export async function recheckCorrectedDocumentInSession(params: {
   session: SessionState;
   correctedFile: { buffer: Buffer; originalname: string };
   targetRequirementId?: string;
-}): Promise<{
+}, matchEvidence = matchEvidenceWithGemini): Promise<{
   session: SessionState;
   affectedRequirements: string[];
   progressSteps: string[];
@@ -364,7 +364,7 @@ export async function recheckCorrectedDocumentInSession(params: {
   let updatedMatches: EvidenceMatch[] = [];
   if (session.mode === 'LIVE' && process.env.GEMINI_API_KEY && targetReqs.length > 0) {
     try {
-      const llmMatched = await matchEvidenceWithGemini(targetReqs, [correctedDoc]);
+      const llmMatched = await matchEvidence(targetReqs, [correctedDoc]);
       updatedMatches = llmMatched.matches.filter((m) => m.docId === correctedDoc.docId);
     } catch (error) {
       const reason = sanitizeLlmError(error);
@@ -378,7 +378,7 @@ export async function recheckCorrectedDocumentInSession(params: {
     }
   } else {
     updatedMatches = targetReqs
-      .filter((r) => targetRequirementId || docMatchesRequirementByContent(correctedDoc.docKind, r))
+      .filter((r) => docMatchesRequirementByContent(correctedDoc.docKind, r))
       .map((r) => deterministicMatchForCorrectedDoc(correctedDoc, r));
   }
 

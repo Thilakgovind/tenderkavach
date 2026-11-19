@@ -388,6 +388,26 @@ test('6. Corrected document upload matches by content even with renamed filename
   assert.equal(statusMap.get('R4'), 'MISSING'); // Unrelated blocker remains intact!
 });
 
+test('failed live recheck reports the fallback and preserves unrelated findings', async () => {
+  const session = createSampleSession();
+  session.mode = 'LIVE';
+  const originalKey = process.env.GEMINI_API_KEY;
+  process.env.GEMINI_API_KEY = 'test-only';
+  try {
+    const result = await recheckCorrectedDocumentInSession({
+      session,
+      correctedFile: { buffer: getSampleCorrectedIsoPdfBuffer(), originalname: 'renewed.pdf' },
+      targetRequirementId: 'R2',
+    }, async () => { throw new Error('timeout'); });
+    assert.match(result.session.warnings.join('\n'), /Gemini request timed out.*Results use document text only/);
+    assert.deepEqual(result.affectedRequirements, ['R2']);
+    assert.equal(session.validation.find(f => f.requirementId === 'R4')?.status, 'MISSING');
+  } finally {
+    if (originalKey === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = originalKey;
+  }
+});
+
 test('7. Session lifecycle (missing 404, expired 410, conflict 409) & HTML XSS escaping', async () => {
   const base = createSampleSession();
 
