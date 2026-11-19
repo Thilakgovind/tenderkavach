@@ -1,5 +1,5 @@
 function invalid(stage: string): never {
-  throw new Error(`INVALID_JSON_SCHEMA: ${stage} response from Gemini is invalid.`);
+  throw new Error(`INVALID_${stage.toUpperCase().replaceAll(' ', '_')}_RESPONSE: Gemini returned an unusable response.`);
 }
 
 function record(value: unknown, stage: string): Record<string, unknown> {
