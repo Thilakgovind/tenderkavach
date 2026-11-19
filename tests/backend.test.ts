@@ -112,6 +112,16 @@ test('Gemini timeout and exhausted retries explain failure, and a recovered retr
   assert.equal(attempts, 2);
 });
 
+test('corrupt, oversized and non-PDF uploads explain why ingestion stopped', async () => {
+  for (const [bytes, message] of [
+    [Buffer.from('%PDF-1.4 invalid document'), /Failed to parse PDF/],
+    [Buffer.alloc(25 * 1024 * 1024 + 1), /exceeds the 25 MB size limit/],
+    [Buffer.from('plain text'), /does not have a valid %PDF header/],
+  ] as const) {
+    await assert.rejects(extractPdfPages(bytes, 'upload.pdf', 'tender', 'T1'), message);
+  }
+});
+
 function buildTwoPagePdfBuffer(page1Lines: string[], page2Lines: string[]): Buffer {
   const encodeLines = (lines: string[]) =>
     lines
