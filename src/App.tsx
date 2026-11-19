@@ -1157,7 +1157,7 @@ export default function App() {
       </div>
 
       {/* Navigation pinned to viewport */}
-      <header ref={navRef} className="nav-bar">
+      <header ref={navRef} className={`nav-bar${workspaceOpen ? ' has-workspace' : ''}`}>
         <a
           href="/"
           onClick={handleWordmarkClick}

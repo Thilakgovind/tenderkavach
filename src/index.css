@@ -723,6 +723,18 @@ body {
 }
 
 /* Scoped Workspace Typography (keeps landing page Inter typography untouched) */
+.nav-bar.has-workspace .nav-pill-link,
+.nav-bar.has-workspace .nav-lang-btn,
+.nav-bar.has-workspace .nav-cta-btn {
+  min-height: 44px;
+}
+
+@media (max-width: 819px) and (min-height: 501px) {
+  .nav-bar.has-workspace .nav-pill-bar {
+    height: 52px;
+  }
+}
+
 .tk-workspace {
   font-family: "Satoshi", "Noto Sans Tamil", -apple-system, BlinkMacSystemFont, sans-serif;
   font-size: 15px;
