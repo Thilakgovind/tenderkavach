@@ -307,6 +307,23 @@ test('4. Deterministic validator handles EXPIRED, MISSING, MISMATCH, Udyam-EMD, 
   void tenderDoc;
 });
 
+test('EMD finding cites the matched file without asserting it is a certificate', () => {
+  const s = createSampleSession();
+  const match = s.matches.find(m => m.requirementId === 'R4')!;
+  const doc = s.documents.supplierDocs.find(d => d.docId === match.docId)!;
+  const [finding] = validateRequirements({
+    requirements: s.requirements.filter(r => r.id === 'R4'),
+    matches: [{ ...match, docName: 'financial.pdf' }],
+    supplierDocs: [{ ...doc, filename: 'financial.pdf' }],
+    profile: s.profile, deadline: s.deadline,
+  });
+  assert.equal(finding.status, 'MISSING');
+  for (const reason of [finding.explanation, finding.explanationTa]) {
+    assert.match(reason, /financial\.pdf/);
+    assert.doesNotMatch(reason, /Udyam certificate|உத்யம் சான்றிதழ்/i);
+  }
+});
+
 test('5. Guardrails enforce forced PASS refusal, negated approval, chat upload claim, and dispute separation', () => {
   const session = createSampleSession();
 
