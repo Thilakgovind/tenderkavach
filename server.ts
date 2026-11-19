@@ -1,0 +1,620 @@
+import 'dotenv/config';
+import express, { type NextFunction, type Request, type Response } from 'express';
+import multer from 'multer';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { GoogleGenAI, Type } from '@google/genai';
+import { handleSessionChatTurn } from './server/chat.ts';
+import { IngestionError, MAX_ZIP_BYTES } from './server/ingest.ts';
+import { getActiveGeminiModel, sanitizeLlmError } from './server/llm.ts';
+import {
+  PipelineError,
+  recheckCorrectedDocumentInSession,
+  runLiveAnalysisPipeline,
+} from './server/pipeline.ts';
+import { renderHtmlReadinessReport } from './server/report.ts';
+import {
+  createSampleSession,
+  getSampleCorrectedIsoPdfBuffer,
+} from './server/sampleData.ts';
+import {
+  deleteSession,
+  lookupSession,
+  updateSession,
+} from './server/sessionStore.ts';
+import { executeGroundedTool } from './server/tools.ts';
+import { speak, transcribe, VoiceError } from './server/sarvam.ts';
+import type { ChatLanguage, IntegrationBoundaries } from './server/types.ts';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const PORT = Number(process.env.PORT || 3000);
+const PROBE_TIMEOUT_MS = 20_000;
+
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: MAX_ZIP_BYTES,
+    files: 4,
+  },
+});
+
+function getIntegrationBoundaries(): IntegrationBoundaries {
+  const sarvamReady = Boolean(process.env.SARVAM_API_KEY?.trim());
+  const n8nReady = Boolean(process.env.AUTOMATION_SHARED_SECRET?.trim());
+  return {
+  sarvamVoice: {
+    connected: sarvamReady,
+    purpose: 'Tamil & mixed Tanglish speech-to-text transcription',
+    note: sarvamReady
+      ? 'Sarvam is enabled for server-side Tamil/English transcription. Review the transcript before it is sent.'
+      : 'Sarvam AI access is not configured; browser Web Speech API fallback and editable text input are active.',
+  },
+  n8nAutomation: {
+    connected: n8nReady,
+    requiresExplicitAuthorization: true,
+    purpose: 'Authorized external reminders and compliance notifications',
+    note: n8nReady
+      ? 'n8n dispatcher is authenticated. It may draft internal work only; it never submits bids or sends messages automatically.'
+      : 'n8n workflow webhook is not connected; Namma Tender never sends external emails or submissions automatically.',
+  },
+  };
+}
+
+interface ProbePayload {
+  status: 'PASS' | 'FAIL' | 'REVIEW_REQUIRED';
+  summary: string;
+  verifiedCitation: boolean;
+}
+
+function validateProbePayload(obj: unknown): obj is ProbePayload {
+  if (!obj || typeof obj !== 'object') return false;
+  const rec = obj as Record<string, unknown>;
+  const validStatus =
+    rec.status === 'PASS' || rec.status === 'FAIL' || rec.status === 'REVIEW_REQUIRED';
+  return (
+    validStatus &&
+    typeof rec.summary === 'string' &&
+    rec.summary.trim().length > 0 &&
+    typeof rec.verifiedCitation === 'boolean'
+  );
+}
+
+async function runGeminiStructuredProbe(modelName = getActiveGeminiModel()) {
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey || !apiKey.trim()) {
+    return {
+      ok: false as const,
+      category: 'missing_key' as const,
+      httpStatus: 503,
+      model: modelName,
+      latencyMs: 0,
+      message: 'GEMINI_API_KEY is not configured in the server environment.',
+    };
+  }
+
+  const ai = new GoogleGenAI({
+    apiKey,
+    httpOptions: {
+      headers: {
+        'User-Agent': 'aistudio-build',
+      },
+    },
+  });
+
+  const startedAt = Date.now();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+
+  try {
+    const response = await Promise.race([
+      ai.models.generateContent({
+        model: modelName,
+        contents:
+          'Synthetic probe (no private documents): Requirement R0 states "Supplier must hold an active GST registration." ' +
+          'Evidence E0 states "GSTIN registration status: Active." Classify status as PASS, FAIL, or REVIEW_REQUIRED with a 1-sentence summary.',
+        config: {
+          systemInstruction:
+            'You are a strict tender-compliance JSON classifier. Return only valid JSON matching the requested schema.',
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              status: { type: Type.STRING },
+              summary: { type: Type.STRING },
+              verifiedCitation: { type: Type.BOOLEAN },
+            },
+            required: ['status', 'summary', 'verifiedCitation'],
+          },
+        },
+      }),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error('Probe timeout exceeded')),
+          PROBE_TIMEOUT_MS
+        );
+      }),
+    ]);
+
+    const latencyMs = Date.now() - startedAt;
+    const rawText = (response.text ?? '').trim();
+    const parsed = JSON.parse(rawText);
+    if (!validateProbePayload(parsed)) {
+      return {
+        ok: false as const,
+        category: 'invalid_json_schema' as const,
+        httpStatus: 502,
+        model: modelName,
+        latencyMs,
+        message: 'Gemini JSON output failed strict schema validation.',
+      };
+    }
+
+    return {
+      ok: true as const,
+      model: modelName,
+      latencyMs,
+      data: parsed,
+    };
+  } catch (err) {
+    const latencyMs = Date.now() - startedAt;
+    const mapped = sanitizeLlmError(err);
+    return {
+      ok: false as const,
+      category: mapped.category,
+      httpStatus: mapped.httpStatus,
+      model: modelName,
+      latencyMs,
+      message: mapped.message,
+    };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+export function createApiRouter() {
+  const router = express.Router();
+
+  router.get('/health', (_req, res) => {
+    res.json({
+      ok: true,
+      service: 'namma-tender-api',
+      provider: process.env.LLM_PROVIDER || 'gemini',
+      model: getActiveGeminiModel(),
+      keyConfigured: Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY.trim()),
+      integrations: getIntegrationBoundaries(),
+    });
+  });
+
+  router.get('/integrations/status', (_req, res) => {
+    res.json(getIntegrationBoundaries());
+  });
+
+  router.post('/voice/transcribe', upload.single('audio'), async (req, res, next) => {
+    try {
+      if (!req.file) {
+        res.status(400).json({ ok: false, error: 'Audio file is required.' });
+        return;
+      }
+      const result = await transcribe(req.file.buffer, req.file.mimetype || 'audio/webm');
+      res.json({ ok: true, ...result });
+    } catch (err) {
+      if (err instanceof VoiceError) {
+        res.status(err.status).json({ ok: false, error: err.message });
+        return;
+      }
+      next(err);
+    }
+  });
+
+  router.post('/voice/speak', async (req, res, next) => {
+    try {
+      const text = typeof req.body?.text === 'string' ? req.body.text : '';
+      const language = req.body?.language === 'en-IN' ? 'en-IN' : 'ta-IN';
+      const result = await speak(text, language);
+      res.json({ ok: true, ...result });
+    } catch (err) {
+      if (err instanceof VoiceError) {
+        res.status(err.status).json({ ok: false, error: err.message });
+        return;
+      }
+      next(err);
+    }
+  });
+
+  router.post('/gemini/probe', async (req, res) => {
+    const requestedModel =
+      typeof req.body?.model === 'string' && req.body.model.trim()
+        ? req.body.model.trim()
+        : getActiveGeminiModel();
+    const result = await runGeminiStructuredProbe(requestedModel);
+    if (!result.ok) {
+      res.status(result.httpStatus).json(result);
+      return;
+    }
+    res.json(result);
+  });
+
+  // Sample Mode endpoints
+  router.post('/sessions/sample', (_req, res) => {
+    const session = createSampleSession();
+    res.status(201).json({
+      ok: true,
+      session,
+      progressSteps: session.chatHistory[0]?.progressSteps || [],
+    });
+  });
+
+  router.get('/sample/corrected-iso.pdf', (_req, res) => {
+    const pdfBuf = getSampleCorrectedIsoPdfBuffer();
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'attachment; filename="Sample_Renewed_ISO_9001.pdf"');
+    res.send(pdfBuf);
+  });
+
+  // Live Mode document intake + analysis
+  router.post(
+    '/sessions/analyze',
+    upload.fields([
+      { name: 'tenderPdf', maxCount: 1 },
+      { name: 'supplierZip', maxCount: 1 },
+      { name: 'corrigendumPdf', maxCount: 1 },
+    ]),
+    async (req, res, next) => {
+      try {
+        const files = (req.files || {}) as Record<string, Express.Multer.File[]>;
+        const tenderFile = files.tenderPdf?.[0];
+        const supplierZipFile = files.supplierZip?.[0];
+        const corrigendumFile = files.corrigendumPdf?.[0];
+
+        const companyName = String(req.body?.companyName || '').trim();
+        const district = String(req.body?.district || '').trim();
+        const sector = String(req.body?.sector || '').trim();
+        const deadline = String(req.body?.deadline || '').trim();
+        const tenderReference = String(req.body?.tenderReference || '').trim() || undefined;
+        const email = String(req.body?.email || '').trim() || undefined;
+        const idempotencyKey =
+          typeof req.headers['x-idempotency-key'] === 'string'
+            ? req.headers['x-idempotency-key']
+            : undefined;
+
+        if (!companyName || !district || !sector || !deadline) {
+          res.status(400).json({
+            ok: false,
+            error: 'Company name, Tamil Nadu district, sector, and confirmed bid deadline are required.',
+          });
+          return;
+        }
+        if (!tenderFile) {
+          res.status(400).json({ ok: false, error: 'Tender PDF upload is required.' });
+          return;
+        }
+        if (!supplierZipFile) {
+          res.status(400).json({ ok: false, error: 'Supplier documents ZIP upload is required.' });
+          return;
+        }
+
+        const result = await runLiveAnalysisPipeline({
+          profile: {
+            companyName,
+            district,
+            sector,
+            tenderReference,
+            email,
+          },
+          confirmedDeadline: deadline,
+          tenderFile: { buffer: tenderFile.buffer, originalname: tenderFile.originalname },
+          supplierZipFile: {
+            buffer: supplierZipFile.buffer,
+            originalname: supplierZipFile.originalname,
+          },
+          corrigendumFile: corrigendumFile
+            ? {
+                buffer: corrigendumFile.buffer,
+                originalname: corrigendumFile.originalname,
+              }
+            : undefined,
+          idempotencyKey,
+        });
+
+        res.status(201).json({
+          ok: true,
+          session: result.session,
+          progressSteps: result.progressSteps,
+        });
+      } catch (err) {
+        next(err);
+      }
+    }
+  );
+
+  // Retrieve authoritative session state
+  router.get('/sessions/:id', (req, res) => {
+    const found = lookupSession(req.params.id);
+    if (found.status === 'missing') {
+      res.status(404).json({
+        ok: false,
+        code: 'missing',
+        error: 'Session not found. It may have been cleared on server restart.',
+      });
+      return;
+    }
+    if (found.status === 'expired') {
+      res.status(410).json({
+        ok: false,
+        code: 'expired',
+        error: 'Session has expired. Please re-upload documents or open Sample Mode.',
+      });
+      return;
+    }
+    res.json({ ok: true, session: found.session });
+  });
+
+  // Delete session
+  router.delete('/sessions/:id', (req, res) => {
+    const deleted = deleteSession(req.params.id);
+    if (!deleted) {
+      res.status(404).json({ ok: false, error: 'Session not found.' });
+      return;
+    }
+    res.json({ ok: true });
+  });
+
+  // Grounded chat endpoint
+  router.post('/sessions/:id/chat', async (req, res) => {
+    const message = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
+    const languageRaw = req.body?.language;
+    const language: ChatLanguage =
+      languageRaw === 'Tam' || languageRaw === 'Hin' ? languageRaw : 'Eng';
+    const expectedRevision =
+      typeof req.body?.revision === 'number' ? req.body.revision : undefined;
+
+    if (!message) {
+      res.status(400).json({ ok: false, error: 'Message text is required.' });
+      return;
+    }
+
+    let chatOutput: Awaited<ReturnType<typeof handleSessionChatTurn>> | undefined;
+    const updated = await updateSession(req.params.id, expectedRevision, async (draft) => {
+      chatOutput = await handleSessionChatTurn({
+        session: draft,
+        message,
+        language,
+      });
+    });
+
+    if (!updated.ok) {
+      const status =
+        updated.code === 'missing'
+          ? 404
+          : updated.code === 'expired'
+            ? 410
+            : updated.code === 'conflict'
+              ? 409
+              : 423;
+      res.status(status).json({
+        ok: false,
+        code: updated.code,
+        error: updated.message,
+        currentRevision: updated.currentRevision,
+      });
+      return;
+    }
+
+    res.json({
+      ok: true,
+      session: updated.session,
+      reply: chatOutput?.reply,
+      toolUsed: chatOutput?.toolUsed,
+      progressSteps: chatOutput?.progressSteps || [],
+      citedRequirements: chatOutput?.citedRequirements || [],
+      exportReady: Boolean(chatOutput?.exportReady),
+    });
+  });
+
+  // Explicit human decision / feedback endpoint
+  router.post('/sessions/:id/decision', async (req, res) => {
+    const requirementId =
+      typeof req.body?.requirementId === 'string' ? req.body.requirementId.trim() : undefined;
+    const action = typeof req.body?.action === 'string' ? req.body.action : 'agree';
+    const note = typeof req.body?.note === 'string' ? req.body.note.trim() : '';
+    const languageRaw = req.body?.language;
+    const language: ChatLanguage =
+      languageRaw === 'Tam' || languageRaw === 'Hin' ? languageRaw : 'Eng';
+    const expectedRevision =
+      typeof req.body?.revision === 'number' ? req.body.revision : undefined;
+
+    let toolResult: ReturnType<typeof executeGroundedTool> | undefined;
+    const updated = await updateSession(req.params.id, expectedRevision, (draft) => {
+      if (action === 'approve') {
+        toolResult = executeGroundedTool({
+          session: draft,
+          tool: 'record_decision',
+          userMessage: note || `Approve ${requirementId || ''}`,
+          language,
+          requirementId,
+          decision: 'approved_after_review',
+          note,
+        });
+      } else if (action === 'dispute') {
+        toolResult = executeGroundedTool({
+          session: draft,
+          tool: 'record_feedback',
+          userMessage: note || `I disagree with finding for ${requirementId || ''}`,
+          language,
+          requirementId,
+          decision: 'disputed',
+          note,
+        });
+      } else {
+        toolResult = executeGroundedTool({
+          session: draft,
+          tool: 'record_feedback',
+          userMessage: note || `Agreed with finding for ${requirementId || ''}`,
+          language,
+          requirementId,
+          note,
+        });
+      }
+    });
+
+    if (!updated.ok) {
+      const status =
+        updated.code === 'missing' ? 404 : updated.code === 'expired' ? 410 : 409;
+      res.status(status).json({ ok: false, code: updated.code, error: updated.message });
+      return;
+    }
+
+    res.status(toolResult?.ok === false ? 422 : 200).json({
+      ok: toolResult?.ok ?? true,
+      session: updated.session,
+      message: toolResult?.reply,
+    });
+  });
+
+  // Upload corrected PDF & rerun affected checks
+  router.post(
+    '/sessions/:id/correct',
+    upload.single('correctedPdf'),
+    async (req, res, next) => {
+      try {
+        const file = req.file;
+        if (!file) {
+          res.status(400).json({ ok: false, error: 'Please attach a corrected PDF file.' });
+          return;
+        }
+        const targetRequirementId =
+          typeof req.body?.targetRequirementId === 'string' && req.body.targetRequirementId.trim()
+            ? req.body.targetRequirementId.trim()
+            : undefined;
+        const expectedRevision = req.body?.revision ? Number(req.body.revision) : undefined;
+
+        let recheckInfo:
+          | { affectedRequirements: string[]; progressSteps: string[] }
+          | undefined;
+
+        const updated = await updateSession(
+          req.params.id,
+          Number.isFinite(expectedRevision) ? expectedRevision : undefined,
+          async (draft) => {
+            const out = await recheckCorrectedDocumentInSession({
+              session: draft,
+              correctedFile: { buffer: file.buffer, originalname: file.originalname },
+              targetRequirementId,
+            });
+            recheckInfo = {
+              affectedRequirements: out.affectedRequirements,
+              progressSteps: out.progressSteps,
+            };
+          }
+        );
+
+        if (!updated.ok) {
+          const status =
+            updated.code === 'missing' ? 404 : updated.code === 'expired' ? 410 : 409;
+          res.status(status).json({ ok: false, code: updated.code, error: updated.message });
+          return;
+        }
+
+        res.json({
+          ok: true,
+          session: updated.session,
+          affectedRequirements: recheckInfo?.affectedRequirements || [],
+          progressSteps: recheckInfo?.progressSteps || [],
+        });
+      } catch (err) {
+        next(err);
+      }
+    }
+  );
+
+  // Download or preview escaped HTML Bid Readiness Report
+  router.get('/sessions/:id/report', (req, res) => {
+    const found = lookupSession(req.params.id);
+    if (found.status === 'missing') {
+      res.status(404).json({ ok: false, error: 'Session not found.' });
+      return;
+    }
+    if (found.status === 'expired') {
+      res.status(410).json({ ok: false, error: 'Session expired.' });
+      return;
+    }
+
+    const html = renderHtmlReadinessReport(found.session);
+    if (req.query.format === 'json') {
+      res.json({
+        ok: true,
+        html,
+        revision: found.session.revision,
+      });
+      return;
+    }
+
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="NammaTender_Report_${found.session.sessionId}.html"`
+    );
+    res.send(html);
+  });
+
+  // Error handler for upload, ingestion, and pipeline failures
+  router.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    if (err instanceof multer.MulterError) {
+      res.status(400).json({
+        ok: false,
+        category: 'upload_limit',
+        error: `Upload error: ${err.message}`,
+      });
+      return;
+    }
+    if (err instanceof IngestionError || err instanceof PipelineError) {
+      res.status(err.statusCode).json({
+        ok: false,
+        category: err instanceof PipelineError ? err.category : 'ingestion_error',
+        error: err.message,
+      });
+      return;
+    }
+    const clean =
+      err instanceof Error ? err.message.replace(/AIza[0-9A-Za-z\-_]{20,}/g, '[REDACTED]') : 'Server error';
+    res.status(500).json({ ok: false, error: clean });
+  });
+
+  return router;
+}
+
+export async function startServer() {
+  const app = express();
+  app.use(express.json({ limit: '2mb' }));
+  app.use('/api', createApiRouter());
+
+  if (process.env.NODE_ENV !== 'production') {
+    const { createServer: createViteServer } = await import('vite');
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa',
+    });
+    app.use(vite.middlewares);
+  } else {
+    const distDir = path.resolve(__dirname, 'dist');
+    app.use(express.static(distDir));
+    app.get('*', (_req, res) => {
+      res.sendFile(path.join(distDir, 'index.html'));
+    });
+  }
+
+  return app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Namma Tender server listening on http://0.0.0.0:${PORT}`);
+  });
+}
+
+// Start only when this module is the entrypoint. Tests import createApiRouter()
+// and must never open a second Vite/WebSocket server as an import side effect.
+const isEntrypoint = process.argv[1] && path.resolve(process.argv[1]) === __filename;
+if (isEntrypoint) {
+  startServer().catch((err) => {
+    console.error('Failed to start Namma Tender server:', err instanceof Error ? err.message : err);
+    process.exit(1);
+  });
+}
