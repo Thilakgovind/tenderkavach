@@ -4,6 +4,18 @@ import type {
   IntegrationBoundaries,
   SessionState,
 } from '../../server/types';
+import {
+  validateAutomateResponse,
+  validateChatResponse,
+  validateCorrectResponse,
+  validateDecisionResponse,
+  validateHealth,
+  validateReportResponse,
+  validateSessionResponse,
+  validateVoiceSpeech,
+  validateVoiceTranscript,
+} from './validators';
+import type { HealthResponse } from './validators';
 
 export async function authenticatedFetch(url: string, init?: RequestInit) {
   const session = supabase ? (await supabase.auth.getSession()).data.session : null;
@@ -45,7 +57,18 @@ export class ApiError extends Error {
 async function parseJsonSafe<T>(res: Response): Promise<T> {
   const text = await res.text();
   try {
-    return JSON.parse(text) as T;
+    const parsed: unknown = JSON.parse(text);
+    const url = res.url;
+    if (url.includes('/health')) return validateHealth(parsed) as T;
+    if (url.includes('/chat')) return validateChatResponse(parsed) as T;
+    if (url.includes('/decision')) return validateDecisionResponse(parsed) as T;
+    if (url.includes('/correct')) return validateCorrectResponse(parsed) as T;
+    if (url.includes('/report?format=json')) return validateReportResponse(parsed) as T;
+    if (url.includes('/voice/transcribe')) return validateVoiceTranscript(parsed) as T;
+    if (url.includes('/voice/speak')) return validateVoiceSpeech(parsed) as T;
+    if (url.includes('/automate')) return validateAutomateResponse(parsed) as T;
+    if (url.includes('/sessions/')) return validateSessionResponse(parsed) as T;
+    return parsed as T;
   } catch {
     throw new ApiError(text || `HTTP ${res.status}`, res.status);
   }
@@ -59,17 +82,11 @@ export async function checkServerHealth(): Promise<{
   integrations: IntegrationBoundaries;
 }> {
   const res = await fetch('/api/health');
-  const data = await parseJsonSafe<Record<string, unknown>>(res);
+  const data = await parseJsonSafe<HealthResponse>(res);
   if (!res.ok) {
     throw new ApiError(String(data.error || 'Health check failed'), res.status);
   }
-  return data as unknown as {
-    ok: boolean;
-    provider: string;
-    model: string;
-    keyConfigured: boolean;
-    integrations: IntegrationBoundaries;
-  };
+  return data;
 }
 
 export async function createSampleSessionApi(): Promise<{

@@ -2,6 +2,9 @@ import type { IntegrationBoundaries, SessionState } from '../../server/types';
 
 export type HealthResponse = {
   ok: boolean;
+  error?: string;
+  code?: string;
+  category?: string;
   provider: string;
   model: string;
   keyConfigured: boolean;

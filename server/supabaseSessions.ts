@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import type { SessionState } from './types.ts';
+import { validateSessionState } from './validators.ts';
 
 export function createSessionRepository() {
   const url = (process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL)?.trim();
@@ -43,7 +44,7 @@ export function createSessionRepository() {
       return (data || []).map((row) => ({
         sessionId: String(row.session_id),
         updatedAt: String(row.updated_at),
-        state: row.state as SessionState,
+        state: validateSessionState(row.state),
       }));
     },
     async update(ownerId: string, state: SessionState, previousRevision: number) {
