@@ -13,7 +13,7 @@ import type {
 } from './types.ts';
 
 export const VERIFIED_GEMINI_MODEL = 'gemini-3.1-flash-lite';
-const LLM_TIMEOUT_MS = 25_000;
+const LLM_TIMEOUT_MS = 60_000;
 
 export function getActiveGeminiModel(): string {
   const configured = (process.env.LLM_MODEL || '').trim();
