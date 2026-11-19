@@ -49,6 +49,20 @@ import { executeGroundedTool } from '../server/tools.ts';
 import { computeDeadlineInfo, validateRequirements } from '../server/validator.ts';
 import { recheckCorrectedDocumentInSession } from '../server/pipeline.ts';
 
+test('expired and missing findings refuse approval and retain a Sentinel audit record', () => {
+  const session = createSampleSession();
+  for (const status of ['EXPIRED', 'MISSING']) {
+    const finding = session.validation.find(f => f.status === status)!;
+    const id = finding.requirementId;
+    const result = executeGroundedTool({ session, tool: 'record_decision', decision: 'approved_after_review', requirementId: id, userMessage: 'Review document', language: 'Eng' });
+    assert.equal(result.ok, false);
+    assert.match(result.reply, new RegExp(status));
+    assert.equal(session.audit_events.at(-1)?.action, 'blocked_unsupported_approval');
+    assert.equal(session.audit_events.at(-1)?.requirementId, id);
+    assert.equal(finding.status, status);
+  }
+});
+
 function buildTwoPagePdfBuffer(page1Lines: string[], page2Lines: string[]): Buffer {
   const encodeLines = (lines: string[]) =>
     lines
