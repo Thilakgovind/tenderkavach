@@ -6,6 +6,8 @@
 
 ## Inside the sample bid
 
+The two-minute film follows Arun, a fictional workshop owner in Coimbatore, from a failed first bid to a document check on his second. [Read the film transcript](docs/video/aruns-second-bid.md).
+
 A Coimbatore supplier has finished pricing a bid. Five requirements stand between the prepared folder and submission. Two have supporting evidence, one certificate has expired, one declaration is missing, and one item needs a person to decide. The sample lets you work through that decision with fictional documents.
 
 | Start the check | Read the findings |
