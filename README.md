@@ -1,8 +1,10 @@
 # TenderKavach (Namma Tender)
 
-[Try the live app](https://tenderproject-two.vercel.app/) · [Watch or download the narrated walkthrough](docs/video/TenderKavach.mp4) · [Explore the sample bid](#inside-the-sample-bid)
+**[▶ Watch Arun’s Second Bid — narrated MP4 · 1 min 55 sec](docs/video/TenderKavach.mp4)**
 
-![TenderKavach landing page featuring Chennai’s Ripon Building](docs/video/landing.png)
+[![Play the TenderKavach supplier story, featuring Chennai’s Ripon Building](docs/video/landing.png)](docs/video/TenderKavach.mp4)
+
+[Try the live app](https://tenderproject-two.vercel.app/) · [Download the MP4](https://raw.githubusercontent.com/Thilakgovind/tenderkavach/main/docs/video/TenderKavach.mp4) · [Explore the sample bid](#inside-the-sample-bid)
 
 ## Inside the sample bid
 
