@@ -352,7 +352,7 @@ export async function recheckCorrectedDocumentInSession(params: {
   });
 
   const targetReqs =
-    affectedReqs.length > 0
+    targetRequirementId || affectedReqs.length > 0
       ? affectedReqs
       : session.requirements.filter((r) => {
           const cur = session.validation.find((v) => v.requirementId === r.id);
@@ -366,8 +366,12 @@ export async function recheckCorrectedDocumentInSession(params: {
     try {
       const llmMatched = await matchEvidenceWithGemini(targetReqs, [correctedDoc]);
       updatedMatches = llmMatched.matches.filter((m) => m.docId === correctedDoc.docId);
-    } catch {
-      // Fallback to deterministic content extraction only if live call fails cleanly
+    } catch (error) {
+      const reason = sanitizeLlmError(error);
+      session.warnings = Array.from(new Set([
+        ...session.warnings,
+        `Gemini could not verify corrected evidence: ${reason.message} Results use document text only and require review.`,
+      ]));
       updatedMatches = targetReqs
         .filter((r) => docMatchesRequirementByContent(correctedDoc.docKind, r))
         .map((r) => deterministicMatchForCorrectedDoc(correctedDoc, r));
