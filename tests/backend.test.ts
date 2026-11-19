@@ -63,6 +63,40 @@ test('expired and missing findings refuse approval and retain a Sentinel audit r
   }
 });
 
+test('foreign users get 404 and anonymous users get 401 on all seven saved-bid routes', async (t) => {
+  const state = { ...createSampleSession(), mode: 'LIVE', sessionId: 'tk_012345abcdef' };
+  const external = express();
+  external.get('/auth/v1/user', (req,res) => res.json({id:req.get('authorization') === 'Bearer alice' ? 'alice' : 'bob', aud:'authenticated'}));
+  external.get('/rest/v1/bid_session_snapshots', (req,res) => {
+    const rows = [{owner_id:'alice', session_id:state.sessionId, state}];
+    res.json(rows.filter(row => (!req.query.owner_id || req.query.owner_id === 'eq.' + row.owner_id) && req.query.session_id === 'eq.' + row.session_id));
+  });
+  async function listen(app: ReturnType<typeof express>) {
+    const server = await new Promise<ReturnType<typeof app.listen>>(resolve => {
+      const s = app.listen(0,'127.0.0.1',()=>resolve(s));
+    });
+    t.after(()=>new Promise<void>(resolve=>server.close(()=>resolve())));
+    const addr = server.address();
+    assert.ok(addr && typeof addr === 'object');
+    return 'http://127.0.0.1:' + addr.port;
+  }
+  const url = await listen(external);
+  const config = { VITE_SUPABASE_URL:url, VITE_SUPABASE_PUBLISHABLE_KEY:'test-public', SUPABASE_SERVICE_ROLE_KEY:'test-server' };
+  for (const [key,value] of Object.entries(config)) {
+    const old = process.env[key];
+    t.after(()=>{ if(old === undefined) delete process.env[key]; else process.env[key]=old; });
+    process.env[key]=value;
+  }
+  const app = express();
+  app.use(createApiRouter());
+  const bid = await listen(app) + '/sessions/' + state.sessionId;
+  assert.equal((await fetch(bid,{headers:{Authorization:'Bearer alice'}})).status,200);
+  for(const [method,path] of [['GET',''],['GET','/report'],['POST','/chat'],['POST','/decision'],['POST','/correct'],['POST','/automate'],['DELETE','']]) {
+    assert.equal((await fetch(bid+path,{method,headers:{Authorization:'Bearer bob'}})).status,404,method+path);
+    assert.equal((await fetch(bid+path,{method})).status,401,method+path);
+  }
+});
+
 function buildTwoPagePdfBuffer(page1Lines: string[], page2Lines: string[]): Buffer {
   const encodeLines = (lines: string[]) =>
     lines
