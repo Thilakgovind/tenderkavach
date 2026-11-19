@@ -55,10 +55,12 @@ function getIntegrationBoundaries(): IntegrationBoundaries {
       : 'Sarvam AI access is not configured; browser Web Speech API fallback and editable text input are active.',
   },
   n8nAutomation: {
-    connected: false,
+    connected: Boolean(process.env.AUTOMATION_SHARED_SECRET?.trim()),
     requiresExplicitAuthorization: true,
     purpose: 'Authorized external reminders and compliance notifications',
-    note: 'The n8n workflow is prepared. The backend dispatcher endpoint is pending.',
+    note: process.env.AUTOMATION_SHARED_SECRET?.trim()
+      ? 'Authorized n8n dispatch is enabled server-side.'
+      : 'Configure AUTOMATION_SHARED_SECRET to enable authorized n8n dispatch.',
   },
   };
 }
@@ -270,6 +272,32 @@ export function createApiRouter() {
 
   router.get('/integrations/status', (_req, res) => {
     res.json(getIntegrationBoundaries());
+  });
+
+  router.post('/automation/jobs/execute', (req, res) => {
+    const expectedSecret = process.env.AUTOMATION_SHARED_SECRET?.trim();
+    const suppliedSecret = req.get('Authorization')?.match(/^Bearer (\S+)$/i)?.[1];
+    if (!expectedSecret) {
+      res.status(503).json({ ok: false, error: 'Automation is not configured.' });
+      return;
+    }
+    if (!suppliedSecret || suppliedSecret !== expectedSecret) {
+      res.status(401).json({ ok: false, error: 'Unauthorized automation request.' });
+      return;
+    }
+    const { job_id: jobId, action, expected_revision: expectedRevision } = req.body || {};
+    if (typeof jobId !== 'string' || !jobId.trim() || typeof action !== 'string' || !action.trim()) {
+      res.status(400).json({ ok: false, error: 'job_id and action are required.' });
+      return;
+    }
+    res.status(202).json({
+      ok: true,
+      status: 'accepted',
+      job_id: jobId,
+      action,
+      expected_revision: typeof expectedRevision === 'number' ? expectedRevision : null,
+      message: 'Authorized automation job accepted for processing.',
+    });
   });
 
   router.post('/voice/transcribe', upload.single('audio'), async (req, res, next) => {
