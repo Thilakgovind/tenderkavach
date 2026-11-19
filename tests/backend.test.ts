@@ -185,6 +185,33 @@ function buildTwoPagePdfBuffer(page1Lines: string[], page2Lines: string[]): Buff
   return Buffer.from(pdf, 'utf8');
 }
 
+test('security headers and per-IP AI route limit preserve normal responses', async () => {
+  const app = express();
+  app.use('/api', createApiRouter({ maxAiRequestsPerMinute: 1 }));
+  const server = await new Promise<ReturnType<typeof app.listen>>(resolve => {
+    const s = app.listen(0, '127.0.0.1', () => resolve(s));
+  });
+  try {
+    const address = server.address();
+    assert.ok(address && typeof address === 'object');
+    const base = `http://127.0.0.1:${address.port}/api`;
+    const health = await fetch(`${base}/health`);
+    assert.equal(health.status, 200);
+    const policy = health.headers.get('content-security-policy-report-only') || '';
+    assert.match(policy, /fonts.googleapis.com/);
+    assert.match(policy, /api.fontshare.com/);
+    assert.match(policy, /'unsafe-inline'/);
+    assert.equal(health.headers.get('x-content-type-options'), 'nosniff');
+    const first = await fetch(`${base}/voice/speak`, { method: 'POST' });
+    assert.notEqual(first.status, 429);
+    const limited = await fetch(`${base}/voice/speak`, { method: 'POST' });
+    assert.equal(limited.status, 429);
+    assert.match((await limited.json()).error, /Too many requests/);
+  } finally {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});
+
 test('1. PDF ingestion preserves page numbers and flags low-text scanned pages', async () => {
   const twoPagePdf = buildTwoPagePdfBuffer(
     ['Clause R1: Bidder must submit active Tamil Nadu GST Registration Certificate REG-06.'],
