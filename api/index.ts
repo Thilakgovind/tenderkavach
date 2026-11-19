@@ -6,6 +6,6 @@ import { createApiRouter } from '../server.ts';
 // router used by the local Express server.
 const app = express();
 app.use(express.json({ limit: '2mb' }));
-app.use('/', createApiRouter());
+app.use('/api', createApiRouter());
 
 export default app;
