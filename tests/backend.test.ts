@@ -1,5 +1,12 @@
 import assert from 'node:assert/strict';
+import { reminderRequest } from '../server/reminder.ts';
+import { deepStrictEqual } from 'node:assert';
 import test from 'node:test';
+test('reminder dispatcher uses the n8n authenticated job envelope', () => {
+  const req = reminderRequest('tk_example12345', 2, 'test-only');
+  deepStrictEqual(req.headers, { 'Content-Type': 'application/json', Authorization: 'Bearer test-only' });
+  deepStrictEqual(JSON.parse(req.body), {job_id:'tk_example12345',action:'support_draft',expected_revision:2});
+});
 import express from 'express';
 import AdmZip from 'adm-zip';
 import 'dotenv/config';

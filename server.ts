@@ -1,3 +1,4 @@
+import { reminderRequest } from './server/reminder.ts';
 import 'dotenv/config';
 import { createClient } from '@supabase/supabase-js';
 import express, { type NextFunction, type Request, type Response } from 'express';
@@ -62,7 +63,7 @@ function getIntegrationBoundaries(): IntegrationBoundaries {
   const sarvamReady = Boolean(process.env.SARVAM_API_KEY?.trim());
   const n8nWebhookUrl = process.env.N8N_WEBHOOK_URL?.trim();
   const n8nSecret = process.env.AUTOMATION_SHARED_SECRET?.trim();
-  const n8nReady = Boolean(n8nWebhookUrl && n8nSecret && /^https?:\/\//i.test(n8nWebhookUrl));
+  const n8nReady = Boolean(process.env.N8N_REMINDERS_VERIFIED === 'true' && n8nWebhookUrl && n8nSecret && /^https?:\/\//i.test(n8nWebhookUrl));
   return {
     sarvamVoice: {
       connected: sarvamReady,
@@ -796,7 +797,7 @@ export function createApiRouter(options?: { maxAiRequestsPerMinute?: number }) {
   router.post('/sessions/:id/automate', async (req, res, next) => {
     const webhookUrl = process.env.N8N_WEBHOOK_URL?.trim();
     const secret = process.env.AUTOMATION_SHARED_SECRET?.trim();
-    if (!webhookUrl || !secret || !/^https?:\/\//i.test(webhookUrl)) {
+    if (process.env.N8N_REMINDERS_VERIFIED !== 'true' || !webhookUrl || !secret || !/^https?:\/\//i.test(webhookUrl)) {
       res.status(503).json({
         ok: false,
         error: 'n8n automation webhook is not configured on the server.',
@@ -839,36 +840,9 @@ export function createApiRouter(options?: { maxAiRequestsPerMinute?: number }) {
     }
 
     const session = found.session;
-    const payload = {
-      event: 'tenderkavach.rescue_reminder',
-      sessionId: session.sessionId,
-      mode: session.mode,
-      companyName: session.profile.companyName,
-      district: session.profile.district,
-      sector: session.profile.sector,
-      tenderReference: session.profile.tenderReference || null,
-      recipientEmail: recipientEmailRaw || session.profile.email || null,
-      deadline: session.deadline,
-      blockersCount: session.validation.filter((v) => v.status !== 'PASS' && v.status !== 'NOT_APPLICABLE').length,
-      rescuePlan: session.plan.map((item) => ({
-        priority: item.priority,
-        requirementId: item.requirementId,
-        urgency: item.urgency,
-        whatToFix: item.whatToFix,
-        suggestedOwner: item.suggestedOwner,
-        timeRemaining: item.timeRemaining,
-      })),
-      dispatchedAt: new Date().toISOString(),
-    };
-
     try {
       const upstream = await fetch(webhookUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-TenderKavach-Secret': secret,
-        },
-        body: JSON.stringify(payload),
+        ...reminderRequest(session.sessionId, session.revision, secret),
         signal: AbortSignal.timeout(15_000),
       });
       if (!upstream.ok) {
@@ -893,14 +867,14 @@ export function createApiRouter(options?: { maxAiRequestsPerMinute?: number }) {
       });
 
       if (!updated || !updated.ok) {
-        res.json({ ok: true, session, message: 'Compliance reminder dispatched to n8n.' });
+        res.json({ ok: true, session, message: 'n8n returned HTTP ' + upstream.status + '. Delivery unconfirmed.' });
         return;
       }
 
       res.json({
         ok: true,
         session: updated.session,
-        message: 'Compliance reminder dispatched to n8n.',
+        message: 'n8n returned HTTP ' + upstream.status + '. Delivery unconfirmed.',
       });
     } catch (err) {
       res.status(502).json({
