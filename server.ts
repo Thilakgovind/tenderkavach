@@ -197,6 +197,28 @@ async function runGeminiStructuredProbe(modelName = getActiveGeminiModel()) {
 }
 
 export function applySecurityHeaders(_req: Request, res: Response, next: NextFunction) {
+  const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL;
+  let supabaseOrigin = '';
+  if (supabaseUrl) {
+    try {
+      const parsed = new URL(supabaseUrl);
+      if (parsed.protocol === 'https:') supabaseOrigin = parsed.origin;
+    } catch {
+      // An invalid optional origin is omitted from the browser policy.
+    }
+  }
+  res.setHeader('Content-Security-Policy-Report-Only', [
+    "default-src 'self'",
+    "script-src 'self'",
+    "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://api.fontshare.com",
+    "font-src 'self' https://fonts.gstatic.com https://cdn.fontshare.com",
+    "img-src 'self' data: blob: https://d8j0ntlcm91z4.cloudfront.net https://images.higgs.ai",
+    "media-src 'self' data: blob: https://d8j0ntlcm91z4.cloudfront.net",
+    `connect-src 'self'${supabaseOrigin ? ` ${supabaseOrigin}` : ''}`,
+    "object-src 'none'",
+    "base-uri 'self'",
+    "frame-ancestors 'none'",
+  ].join('; '));
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader('Permissions-Policy', 'camera=(), geolocation=(), payment=(), usb=()');
