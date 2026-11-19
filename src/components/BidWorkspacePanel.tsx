@@ -963,7 +963,7 @@ export function BidWorkspacePanel({
                                 key={reqId}
                                 type="button"
                                 onClick={() => setActiveTab('Findings')}
-                                className="min-h-[36px] px-3 rounded-full border border-white/15 text-[12px] font-mono text-zinc-300 hover:bg-white/10 cursor-pointer"
+                                className="min-h-[44px] px-3 rounded-full border border-white/15 text-[12px] font-mono text-zinc-300 hover:bg-white/10 cursor-pointer"
                               >
                                 {reqId}
                               </button>
