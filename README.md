@@ -1,5 +1,47 @@
 # TenderKavach (Namma Tender)
 
+[Try the live app](https://tenderproject-two.vercel.app/) · [Watch or download the narrated walkthrough](docs/video/TenderKavach.mp4) · [Explore the sample bid](#inside-the-sample-bid)
+
+![TenderKavach landing page featuring Chennai’s Ripon Building](docs/video/landing.png)
+
+## Inside the sample bid
+
+A Coimbatore supplier has finished pricing a bid. Five requirements stand between the prepared folder and submission. Two have supporting evidence, one certificate has expired, one declaration is missing, and one item needs a person to decide. The sample lets you work through that decision with fictional documents.
+
+| Start the check | Read the findings |
+| --- | --- |
+| ![Sample intake](docs/video/intake.png) | ![Findings workspace](docs/video/findings.png) |
+| Choose **Check my bid → Sample Mode (Demo) → Open Sample Mode Workspace**. | Open the expired ISO finding and inspect the cited source. |
+
+| Assign the fix | Challenge the result |
+| --- | --- |
+| ![Rescue plan](docs/video/Rescue.png) | ![Evidence chat](docs/video/Chat.png) |
+| Use **Rescue** to identify the owner and the evidence needed. | Ask **Chat** what blocks submission. A request to approve a missing document leaves the finding open. |
+
+![Report workspace](docs/video/Report.png)
+
+The report carries the outstanding items and decision history into the supplier’s final review. In the sample, replacing the expired certificate can resolve that finding while the missing declaration stays open.
+
+## How the check works
+
+**The supplier’s path.** Follow the correction loop from an insufficient document back to a fresh finding.
+
+![Bid rescue workflow](docs/diagrams/bid-rescue-flow.png)
+
+**The architecture.** Gemini proposes matches. The server checks citations and applies validation rules before the workspace displays a status.
+
+![System architecture](docs/diagrams/architecture.png)
+
+**The technology stack.** The dotted connections show optional voice and automation services. Production automation still requires the matching n8n shared secret.
+
+![Technology stack](docs/diagrams/tech-stack.png)
+
+[Editable Mermaid sources](docs/diagrams/)
+
+## Where this could go next
+
+A proposed next step is amendment tracking. If a buyer changes a clause after a supplier has prepared a packet, the app could identify the affected requirement and request a fresh review. An opt-in Tamil voice reminder could then explain what changed and which document to reopen. This is a roadmap scenario.
+
 TenderKavach is a bid-rescue and tender-compliance assistant for Tamil Nadu MSMEs that finds technical disqualification risks before bid submission.
 
 > **Important Scope & Limitations**
