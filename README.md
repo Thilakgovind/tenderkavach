@@ -1,18 +1,20 @@
 # TenderKavach (Namma Tender)
 
+Check a tender against your supplier documents, see what could block submission, and find the evidence needed to fix it.
+
 ![TenderKavach overlooking Chennai’s Ripon Building](docs/video/landing.png)
 
-<video src="https://tenderproject-two.vercel.app/tender-demo.mp4" controls></video>
+
 
 [![Animated walkthrough of Arun’s second bid](docs/video/walkthrough.gif)](https://tenderproject-two.vercel.app/tender-demo.mp4)
 
-**[▶ Play Arun’s Second Bid with sound · 1 min 55 sec](https://tenderproject-two.vercel.app/tender-demo.mp4)**
+**[▶ Play Arun’s Second Bid with sound · under one minute](https://tenderproject-two.vercel.app/tender-demo.mp4)**
 
 [Try the live app](https://tenderproject-two.vercel.app/) · [Explore the sample bid](#inside-the-sample-bid)
 
 ## Inside the sample bid
 
-The two-minute film follows Arun, a fictional workshop owner in Coimbatore, from a failed first bid to a document check on his second. [Read the film transcript](docs/video/aruns-second-bid.md).
+The short film follows Arun, a fictional workshop owner in Coimbatore, from a failed first bid to a document check on his second. [Read the film transcript](docs/video/aruns-second-bid.md).
 
 A Coimbatore supplier has finished pricing a bid. Five requirements stand between the prepared folder and submission. Two have supporting evidence, one certificate has expired, one declaration is missing, and one item needs a person to decide. The sample lets you work through that decision with fictional documents.
 
@@ -78,57 +80,6 @@ Unlike generic document chatbots that blindly accept LLM claims or allow chat pr
 2. Numeric checks enforce **exact numeric token boundaries** (`150` never matches `1500`) and normalize Indian currency units (`Crores`, `Lakhs`, `INR`).
 3. Dates enforce strict parsing and flag ambiguous `DD/MM` vs `MM/DD` formats for human review.
 4. Direct chat and indirect PDF **prompt-injection guardrails** isolate untrusted PDF text (`<<<UNTRUSTED_DATA_...>>>`), block system-override / secret-disclosure commands, and preserve an immutable audit trail.
-
----
-
-## System Architecture
-
-```mermaid
-flowchart TB
-  UI["React + Vite Frontend\n(Animated Hero Landing + Satoshi Bid Workspace)"]
-  Auth["Optional Supabase Auth\n(Passwordless Email OTP, Publishable Key Only)"]
-  API["Express /api Router\n(Local server.ts & Vercel api/index.ts)"]
-  Guard["Security & Prompt Guardrails\n(Rate Limiter, Secret Redaction, PDF & Chat Injection Shield)"]
-  Ingest["Safe Document Ingestion\n(pdfjs-dist w/ bundled worker + AdmZip path/ratio checks)"]
-  Gemini["@google/genai (Server-Only)\n(gemini-3.1-flash-lite Structured Extraction & Matching)"]
-  Sentinel["Deterministic Sentinel & Validator\n(Quote Verification, Expiry Dates, Units, Entity Identity, EMD Rule)"]
-  Rescue["Bid Rescue Engine & Escaped HTML Dossier Export"]
-  DB[("Optional Supabase Postgres\nbid_session_snapshots (Service Role + RLS)")]
-  OptExt["Optional Integrations\n(Sarvam Voice / n8n Webhook Dispatcher)"]
-
-  UI <--> API
-  UI -.-> Auth
-  API --> Guard --> Ingest
-  Ingest --> Gemini
-  Gemini --> Sentinel --> Rescue
-  API -.-> DB
-  API -.-> OptExt
-```
-
----
-
-## Bid Rescue Workflow
-
-```mermaid
-flowchart TD
-  Start["1. Intake: Profile + Deadline + Tender PDF + Supplier ZIP (+ Optional Corrigendum)"]
-  Scan["2. Safe Ingestion & Indirect Injection Scan\n(%PDF check, ZIP path/ratio/encryption checks, page text extraction)"]
-  Extract["3. Gemini Structured Extraction + Matching\n(Isolated untrusted page blocks)"]
-  Verify["4. Deterministic Sentinel Audit\n(Exact quote verification, numeric boundaries, date & company identity checks)"]
-  Classify{"5. Finding Status"}
-  Pass["PASS\n(Verified proof on cited page)"]
-  Unresolved["BLOCKER / REVIEW\n(EXPIRED, MISSING, MISMATCH, FAIL, REVIEW_REQUIRED)"]
-  Rescue["6. Bid Rescue Queue\n(Fix order, suggested owner, required evidence, Time unknown for unverified lead times)"]
-  Action["7a. Upload Corrected PDF -> Content-based Recheck\n7b. Add Human Review Note (Unsupported PASS refused 422)"]
-  Report["8. Export Escaped HTML Readiness Dossier (CSP script-src 'none')"]
-
-  Start --> Scan --> Extract --> Verify --> Classify
-  Classify -->|Compliant| Pass
-  Classify -->|Gap / Risk| Unresolved --> Rescue --> Action
-  Action -->|Re-verify| Verify
-  Pass --> Report
-  Rescue --> Report
-```
 
 ---
 
@@ -231,7 +182,7 @@ npm run lint
 # 2. Vercel Serverless API TypeScript check
 npx tsc -p api/tsconfig.json --noEmit
 
-# 3. Full automated backend + security + prompt-injection test suite (11 tests)
+# 3. Full automated backend + security + prompt-injection test suite 
 npm test
 
 # 4. Production Vite build
