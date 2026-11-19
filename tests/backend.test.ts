@@ -133,6 +133,23 @@ test('an instruction-only correction cannot mark any finding PASS', async () => 
   assert.ok(session.audit_events.some(e => e.action === 'prompt_injection_detected'));
 });
 
+test('the sample report remains usable without integrations and hides the reminder control', async () => {
+  const {createElement} = await import('react');
+  const {renderToStaticMarkup} = await import('react-dom/server');
+  const {BidWorkspacePanel} = await import('../src/components/BidWorkspacePanel');
+  const {isSupabaseConfigured} = await import('../src/lib/supabase');
+  assert.equal(isSupabaseConfigured(), false);
+  const session = createSampleSession();
+  const noop = () => {};
+  const report = (connected: boolean) => renderToStaticMarkup(createElement(BidWorkspacePanel, {
+    session, open:true, initialTab:'Report', language:'Eng', onClose:noop, onSessionUpdate:noop, onStartNewAnalysis:noop, onClearSession:noop,
+    integrations:{sarvamVoice:{connected:false,purpose:'',note:''},n8nAutomation:{connected,requiresExplicitAuthorization:true,purpose:'',note:''}},
+  }));
+  assert.match(report(false), /Download report/);
+  assert.doesNotMatch(report(false), /Send reminder/);
+  assert.match(report(true), /Send reminder/);
+});
+
 function buildTwoPagePdfBuffer(page1Lines: string[], page2Lines: string[]): Buffer {
   const encodeLines = (lines: string[]) =>
     lines
