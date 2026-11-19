@@ -24,7 +24,7 @@ import {
   type SessionState,
   type ValidationStatus,
   fetchReportPreviewApi,
-  getReportDownloadUrl,
+  downloadReport,
   recordDecisionApi,
   sendChatMessageApi,
   transcribeVoiceApi,
@@ -872,14 +872,14 @@ export function BidWorkspacePanel({
                   </p>
                 </div>
                 <div className="flex items-center gap-2">
-                  <a
-                    href={getReportDownloadUrl(session.sessionId)}
-                    download={`NammaTender_Report_${session.sessionId}.html`}
+                  <button
+                    type="button"
+                    onClick={() => void downloadReport(session.sessionId).catch((error: Error) => window.alert(error.message))}
                     className="h-9 px-4 rounded-full bg-[#E0A458] hover:bg-[#EBB46B] text-[#1A1206] text-xs font-semibold inline-flex items-center gap-1.5"
                   >
                     <Download className="h-3.5 w-3.5" />
                     <span>Download HTML Report</span>
-                  </a>
+                  </button>
                   <button
                     type="button"
                     onClick={onClearSession}

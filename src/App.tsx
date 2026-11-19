@@ -5,6 +5,7 @@ import { BidCheckModal } from './components/BidCheckModal';
 import { AuthButton } from './components/AuthButton';
 import { BidWorkspacePanel, type WorkspaceTab } from './components/BidWorkspacePanel';
 import {
+  authenticatedFetch,
   checkServerHealth,
   fetchSessionApi,
   type IntegrationBoundaries,
@@ -263,7 +264,7 @@ export default function App() {
   const handleClearSession = useCallback(() => {
     const id = activeSession?.sessionId;
     if (id) {
-      fetch(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {});
+      authenticatedFetch(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {});
     }
     try {
       window.sessionStorage.removeItem(SESSION_STORAGE_KEY);

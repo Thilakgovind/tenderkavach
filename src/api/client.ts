@@ -1,8 +1,18 @@
+import { supabase } from '../lib/supabase';
 import type {
   ChatLanguage,
   IntegrationBoundaries,
   SessionState,
 } from '../../server/types';
+
+export async function authenticatedFetch(url: string, init?: RequestInit) {
+  const session = supabase ? (await supabase.auth.getSession()).data.session : null;
+  const headers = new Headers(init?.headers);
+  if (session) headers.set('Authorization', `Bearer ${session.access_token}`);
+  return globalThis.fetch(url, { ...init, headers });
+}
+
+const fetch = authenticatedFetch;
 
 export type {
   AuditEvent,
@@ -283,8 +293,15 @@ export async function fetchReportPreviewApi(sessionId: string): Promise<{ html: 
   return { html: data.html, revision: data.revision || 1 };
 }
 
-export function getReportDownloadUrl(sessionId: string): string {
-  return `/api/sessions/${encodeURIComponent(sessionId)}/report`;
+export async function downloadReport(sessionId: string): Promise<void> {
+  const response = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/report`);
+  if (!response.ok) throw new ApiError('Could not download the report. Check your sign-in and retry.', response.status);
+  const url = URL.createObjectURL(await response.blob());
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'NammaTender_Report.html';
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 export async function transcribeVoiceApi(audio: Blob): Promise<string> {

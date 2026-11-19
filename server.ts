@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import { createClient } from '@supabase/supabase-js';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import multer from 'multer';
 import path from 'node:path';
@@ -20,10 +21,13 @@ import {
 import {
   deleteSession,
   lookupSession,
-  updateSession,
+  updateSession as updateMemorySession,
+  type UpdateSessionResult,
 } from './server/sessionStore.ts';
 import { executeGroundedTool } from './server/tools.ts';
 import { speak, transcribe, VoiceError } from './server/sarvam.ts';
+import { createSessionRepository } from './server/supabaseSessions.ts';
+import type { SessionState } from './server/types.ts';
 import type { ChatLanguage, IntegrationBoundaries } from './server/types.ts';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -42,7 +46,6 @@ const upload = multer({
 
 function getIntegrationBoundaries(): IntegrationBoundaries {
   const sarvamReady = Boolean(process.env.SARVAM_API_KEY?.trim());
-  const n8nReady = Boolean(process.env.AUTOMATION_SHARED_SECRET?.trim());
   return {
   sarvamVoice: {
     connected: sarvamReady,
@@ -52,12 +55,10 @@ function getIntegrationBoundaries(): IntegrationBoundaries {
       : 'Sarvam AI access is not configured; browser Web Speech API fallback and editable text input are active.',
   },
   n8nAutomation: {
-    connected: n8nReady,
+    connected: false,
     requiresExplicitAuthorization: true,
     purpose: 'Authorized external reminders and compliance notifications',
-    note: n8nReady
-      ? 'n8n dispatcher is authenticated. It may draft internal work only; it never submits bids or sends messages automatically.'
-      : 'n8n workflow webhook is not connected; Namma Tender never sends external emails or submissions automatically.',
+    note: 'The n8n workflow is prepared. The backend dispatcher endpoint is pending.',
   },
   };
 }
@@ -174,6 +175,87 @@ async function runGeminiStructuredProbe(modelName = getActiveGeminiModel()) {
 
 export function createApiRouter() {
   const router = express.Router();
+  const repository = createSessionRepository();
+  const liveOwners = new Map<string, string>();
+  const projectUrl = process.env.VITE_SUPABASE_URL;
+  const publishableKey = process.env.VITE_SUPABASE_PUBLISHABLE_KEY;
+  const auth = projectUrl && publishableKey
+    ? createClient(projectUrl, publishableKey, { auth: { persistSession: false, autoRefreshToken: false } })
+    : null;
+
+  async function requireUser(req: Request, res: Response, next: NextFunction) {
+    const token = req.get('Authorization')?.match(/^Bearer (\S+)$/i)?.[1];
+    if (!auth || !token) {
+      res.status(401).json({ ok: false, error: 'Sign in to use live bid analysis.' });
+      return;
+    }
+    try {
+      const { data, error } = await auth.auth.getUser(token);
+      if (error || !data.user || data.user.is_anonymous) {
+        res.status(401).json({ ok: false, error: 'Sign in again to continue.' });
+        return;
+      }
+      res.locals.ownerId = data.user.id;
+      next();
+    } catch {
+      res.status(503).json({ ok: false, error: 'Sign-in verification is temporarily unavailable.' });
+    }
+  }
+
+  router.use('/sessions/:id', (req, res, next) => {
+    const id = req.params.id;
+    if (req.method === 'POST' && (id === 'analyze' || id === 'sample')) return next();
+    const found = lookupSession(id);
+    if (repository && !(found.status === 'found' && found.session.mode === 'SAMPLE')) {
+      void requireUser(req, res, () => {
+        void repository.get(res.locals.ownerId, id).then((session) => {
+          if (!session) {
+            res.status(404).json({ ok: false, code: 'missing', error: 'Session not found.' });
+            return;
+          }
+          res.locals.savedSession = session;
+          next();
+        }).catch(next);
+      });
+      return;
+    }
+    if (found.status !== 'found' || found.session.mode === 'SAMPLE') {
+      if (found.status === 'expired') liveOwners.delete(id);
+      next();
+      return;
+    }
+    void requireUser(req, res, () => {
+      if (liveOwners.get(id) !== res.locals.ownerId) {
+        res.status(404).json({ ok: false, error: 'Session not found.' });
+        return;
+      }
+      next();
+    });
+  });
+
+  function requestSession(req: Request, res: Response) {
+    const session: SessionState | undefined = res.locals.savedSession;
+    return session ? { status: 'found' as const, session } : lookupSession(req.params.id);
+  }
+
+  async function updateSession(
+    res: Response,
+    id: string,
+    expectedRevision: number | undefined,
+    mutate: (draft: SessionState) => void | Promise<void>,
+  ): Promise<UpdateSessionResult> {
+    const state: SessionState | undefined = res.locals.savedSession;
+    if (!repository || !state) return updateMemorySession(id, expectedRevision, mutate);
+    const conflict = { ok: false as const, code: 'conflict' as const, message: 'Session changed. Reload before retrying.' };
+    if (expectedRevision !== undefined && state.revision !== expectedRevision) return conflict;
+    const draft = structuredClone(state);
+    await mutate(draft);
+    draft.revision++;
+    draft.updatedAt = new Date().toISOString();
+    return await repository.update(res.locals.ownerId, draft, state.revision)
+      ? { ok: true, session: draft }
+      : conflict;
+  }
 
   router.get('/health', (_req, res) => {
     res.json({
@@ -255,6 +337,7 @@ export function createApiRouter() {
   // Live Mode document intake + analysis
   router.post(
     '/sessions/analyze',
+    requireUser,
     upload.fields([
       { name: 'tenderPdf', maxCount: 1 },
       { name: 'supplierZip', maxCount: 1 },
@@ -314,8 +397,10 @@ export function createApiRouter() {
                 originalname: corrigendumFile.originalname,
               }
             : undefined,
-          idempotencyKey,
+          idempotencyKey: idempotencyKey ? `${res.locals.ownerId}:${idempotencyKey}` : undefined,
         });
+        liveOwners.set(result.session.sessionId, res.locals.ownerId);
+        if (repository) await repository.create(res.locals.ownerId, result.session);
 
         res.status(201).json({
           ok: true,
@@ -330,7 +415,7 @@ export function createApiRouter() {
 
   // Retrieve authoritative session state
   router.get('/sessions/:id', (req, res) => {
-    const found = lookupSession(req.params.id);
+    const found = requestSession(req, res);
     if (found.status === 'missing') {
       res.status(404).json({
         ok: false,
@@ -351,17 +436,30 @@ export function createApiRouter() {
   });
 
   // Delete session
-  router.delete('/sessions/:id', (req, res) => {
+  router.delete('/sessions/:id', async (req, res, next) => {
+    if (repository && res.locals.savedSession) {
+      try {
+        await repository.remove(res.locals.ownerId, req.params.id);
+      } catch (error) {
+        next(error);
+        return;
+      }
+      deleteSession(req.params.id);
+      liveOwners.delete(req.params.id);
+      res.json({ ok: true });
+      return;
+    }
     const deleted = deleteSession(req.params.id);
     if (!deleted) {
       res.status(404).json({ ok: false, error: 'Session not found.' });
       return;
     }
+    liveOwners.delete(req.params.id);
     res.json({ ok: true });
   });
 
   // Grounded chat endpoint
-  router.post('/sessions/:id/chat', async (req, res) => {
+  router.post('/sessions/:id/chat', async (req, res, next) => {
     const message = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
     const languageRaw = req.body?.language;
     const language: ChatLanguage =
@@ -375,13 +473,14 @@ export function createApiRouter() {
     }
 
     let chatOutput: Awaited<ReturnType<typeof handleSessionChatTurn>> | undefined;
-    const updated = await updateSession(req.params.id, expectedRevision, async (draft) => {
+    const updated = await updateSession(res, req.params.id, expectedRevision, async (draft) => {
       chatOutput = await handleSessionChatTurn({
         session: draft,
         message,
         language,
       });
-    });
+    }).catch((error: unknown) => { next(error); return null; });
+    if (!updated) return;
 
     if (!updated.ok) {
       const status =
@@ -413,7 +512,7 @@ export function createApiRouter() {
   });
 
   // Explicit human decision / feedback endpoint
-  router.post('/sessions/:id/decision', async (req, res) => {
+  router.post('/sessions/:id/decision', async (req, res, next) => {
     const requirementId =
       typeof req.body?.requirementId === 'string' ? req.body.requirementId.trim() : undefined;
     const action = typeof req.body?.action === 'string' ? req.body.action : 'agree';
@@ -425,7 +524,7 @@ export function createApiRouter() {
       typeof req.body?.revision === 'number' ? req.body.revision : undefined;
 
     let toolResult: ReturnType<typeof executeGroundedTool> | undefined;
-    const updated = await updateSession(req.params.id, expectedRevision, (draft) => {
+    const updated = await updateSession(res, req.params.id, expectedRevision, (draft) => {
       if (action === 'approve') {
         toolResult = executeGroundedTool({
           session: draft,
@@ -456,7 +555,8 @@ export function createApiRouter() {
           note,
         });
       }
-    });
+    }).catch((error: unknown) => { next(error); return null; });
+    if (!updated) return;
 
     if (!updated.ok) {
       const status =
@@ -494,6 +594,7 @@ export function createApiRouter() {
           | undefined;
 
         const updated = await updateSession(
+          res,
           req.params.id,
           Number.isFinite(expectedRevision) ? expectedRevision : undefined,
           async (draft) => {
@@ -530,7 +631,7 @@ export function createApiRouter() {
 
   // Download or preview escaped HTML Bid Readiness Report
   router.get('/sessions/:id/report', (req, res) => {
-    const found = lookupSession(req.params.id);
+    const found = requestSession(req, res);
     if (found.status === 'missing') {
       res.status(404).json({ ok: false, error: 'Session not found.' });
       return;
