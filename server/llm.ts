@@ -96,7 +96,7 @@ function getGeminiClient(): GoogleGenAI | null {
   });
 }
 
-async function generateWithTimeout<T>(
+export async function generateWithTimeout<T>(
   fn: (ai: GoogleGenAI, model: string) => Promise<T>,
   timeoutMs = LLM_TIMEOUT_MS
 ): Promise<T> {
