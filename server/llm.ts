@@ -1,4 +1,5 @@
 import { GoogleGenAI, Type } from '@google/genai';
+import { parseRequirementsOutput, parseEvidenceOutput, parseToolOutput } from './geminiOutput.ts';
 import {
   auditModelOutputText,
   isolateUntrustedData,
@@ -226,10 +227,7 @@ export async function extractRequirementsWithGemini(
 
   const latencyMs = Date.now() - startedAt;
   const raw = (response.text ?? '').trim();
-  const parsed = JSON.parse(raw) as {
-    incompleteCoverageWarning?: string;
-    requirements?: Array<Record<string, unknown>>;
-  };
+  const parsed = parseRequirementsOutput(raw);
 
   if (!parsed || !Array.isArray(parsed.requirements)) {
     throw new Error('INVALID_JSON_SCHEMA: Requirements array missing from Gemini response.');
@@ -377,9 +375,7 @@ export async function matchEvidenceWithGemini(
   );
 
   const latencyMs = Date.now() - startedAt;
-  const parsed = JSON.parse((response.text ?? '').trim()) as {
-    matches?: Array<Record<string, unknown>>;
-  };
+  const parsed = parseEvidenceOutput((response.text ?? '').trim());
 
   if (!parsed || !Array.isArray(parsed.matches)) {
     throw new Error('INVALID_JSON_SCHEMA: Matches array missing from Gemini response.');
@@ -508,7 +504,7 @@ export async function selectChatToolWithGemini(
     12_000
   );
 
-  const parsed = JSON.parse((response.text ?? '').trim()) as Record<string, unknown>;
+  const parsed = parseToolOutput((response.text ?? '').trim());
   const validTools = new Set<AllowedToolName>([
     'list_blockers',
     'explain_requirement',
