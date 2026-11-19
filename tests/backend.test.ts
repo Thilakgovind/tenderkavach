@@ -97,6 +97,21 @@ test('foreign users get 404 and anonymous users get 401 on all seven saved-bid r
   }
 });
 
+test('Gemini timeout and exhausted retries explain failure, and a recovered retry returns the provider result', async t => {
+  const { generateWithTimeout, sanitizeLlmError } = await import('../server/llm.ts');
+  const prior = process.env.GEMINI_API_KEY;
+  process.env.GEMINI_API_KEY = 'synthetic';
+  t.after(()=>{ if(prior === undefined) delete process.env.GEMINI_API_KEY; else process.env.GEMINI_API_KEY = prior; });
+  await assert.rejects(generateWithTimeout(()=>new Promise<never>(()=>{}), 10), error => sanitizeLlmError(error).category === 'timeout' && /timed out/.test(sanitizeLlmError(error).message));
+  const unavailable = Object.assign(new Error('503 unavailable'), {status:503});
+  let attempts = 0;
+  assert.equal(await generateWithTimeout(async () => { if(++attempts === 1) throw unavailable; return 'extracted'; }), 'extracted');
+  assert.equal(attempts, 2);
+  attempts = 0;
+  await assert.rejects(generateWithTimeout(async () => { attempts++; throw unavailable; }), error => sanitizeLlmError(error).message === 'Gemini provider temporarily unavailable (503).');
+  assert.equal(attempts, 2);
+});
+
 function buildTwoPagePdfBuffer(page1Lines: string[], page2Lines: string[]): Buffer {
   const encodeLines = (lines: string[]) =>
     lines
