@@ -1,8 +1,4 @@
-import type {
-  ChatTurn,
-  IntegrationBoundaries,
-  SessionState,
-} from '../../server/types';
+import type { IntegrationBoundaries, SessionState } from '../../server/types';
 
 export type HealthResponse = {
   ok: boolean;
@@ -61,7 +57,10 @@ function isSessionState(value: unknown): value is SessionState {
     Array.isArray(s.validation) && Array.isArray(s.plan) &&
     Array.isArray(s.decisions) && Array.isArray(s.feedback) &&
     Array.isArray(s.audit_events) && Array.isArray(s.warnings) &&
-    typeof s.provider === 'object' && typeof s.revision === 'number' &&
+    typeof s.provider === 'object' && s.provider !== null &&
+    (s.provider as Record<string, unknown>).provider === 'gemini' &&
+    ['live', 'sample', 'degraded'].includes((s.provider as Record<string, unknown>).extractionMode as string) &&
+    typeof s.revision === 'number' &&
     Array.isArray(s.chatHistory);
 }
 
@@ -76,6 +75,7 @@ function envelope(value: unknown, route: string): Record<string, unknown> {
 
 function sessionResponse<T extends SessionResponse>(value: unknown, route: string): T {
   const data = envelope(value, route);
+  if (data.ok && !isSessionState(data.session)) invalid(route);
   if (data.session !== undefined && !isSessionState(data.session)) invalid(route);
   return data as T;
 }
@@ -122,6 +122,7 @@ export function validateCorrectResponse(value: unknown): CorrectResponse {
 
 export function validateReportResponse(value: unknown): ReportResponse {
   const data = envelope(value, 'report');
+  if (data.ok && typeof data.html !== 'string') invalid('report');
   if (data.html !== undefined && typeof data.html !== 'string') invalid('report');
   if (data.revision !== undefined && (typeof data.revision !== 'number' || !Number.isFinite(data.revision))) invalid('report');
   return data as ReportResponse;
@@ -129,12 +130,14 @@ export function validateReportResponse(value: unknown): ReportResponse {
 
 export function validateVoiceTranscript(value: unknown): VoiceTranscriptResponse {
   const data = envelope(value, 'voice-transcribe');
+  if (data.ok && typeof data.transcript !== 'string') invalid('voice-transcribe');
   optionalString(data.transcript, 'voice-transcribe');
   return data as VoiceTranscriptResponse;
 }
 
 export function validateVoiceSpeech(value: unknown): VoiceSpeechResponse {
   const data = envelope(value, 'voice-speak');
+  if (data.ok && (typeof data.audio_base64 !== 'string' || typeof data.mime_type !== 'string')) invalid('voice-speak');
   optionalString(data.audio_base64, 'voice-speak'); optionalString(data.mime_type, 'voice-speak');
   return data as VoiceSpeechResponse;
 }
