@@ -105,10 +105,21 @@ async function generateWithTimeout<T>(
     throw new Error('MISSING_KEY: GEMINI_API_KEY is not configured on the server.');
   }
   const model = getActiveGeminiModel();
+  const deadline = Date.now() + timeoutMs;
+  async function runWithRetry() {
+    try {
+      return await fn(ai!, model);
+    } catch (error) {
+      const status = (error as { status?: number })?.status;
+      if (status !== 503 || Date.now() + 2000 >= deadline) throw error;
+      await new Promise(resolve => setTimeout(resolve, 750));
+      return fn(ai!, model);
+    }
+  }
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
-      fn(ai, model),
+      runWithRetry(),
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => reject(new Error('Request timeout exceeded')), timeoutMs);
       }),
