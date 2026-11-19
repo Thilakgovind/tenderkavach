@@ -43,7 +43,8 @@ import { executeGroundedTool } from './server/tools.ts';
 import { speak, transcribe, VoiceError } from './server/sarvam.ts';
 import { createSessionRepository } from './server/supabaseSessions.ts';
 import type { SessionState } from './server/types.ts';
-import type { ChatLanguage, IntegrationBoundaries } from './server/types.ts';
+import type { ChatLanguage } from './server/types.ts';
+import { getIntegrationBoundaries } from './server/integrations.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -58,30 +59,6 @@ const upload = multer({
     files: 4,
   },
 });
-
-function getIntegrationBoundaries(): IntegrationBoundaries {
-  const sarvamReady = Boolean(process.env.SARVAM_API_KEY?.trim());
-  const n8nWebhookUrl = process.env.N8N_WEBHOOK_URL?.trim();
-  const n8nSecret = process.env.AUTOMATION_SHARED_SECRET?.trim();
-  const n8nReady = Boolean(process.env.N8N_REMINDERS_VERIFIED === 'true' && n8nWebhookUrl && n8nSecret && /^https?:\/\//i.test(n8nWebhookUrl));
-  return {
-    sarvamVoice: {
-      connected: sarvamReady,
-      purpose: 'Tamil & mixed Tanglish speech-to-text and voice playback',
-      note: sarvamReady
-        ? 'Sarvam is enabled for server-side Tamil/English transcription and speech. Review the transcript before it is sent.'
-        : 'Sarvam AI access is not configured; browser Web Speech API fallback and editable text input are active.',
-    },
-    n8nAutomation: {
-      connected: n8nReady,
-      requiresExplicitAuthorization: true,
-      purpose: 'Authorized external reminders and compliance notifications',
-      note: n8nReady
-        ? 'n8n compliance reminder dispatcher is configured. Reminders only send when explicitly authorized by you.'
-        : 'The n8n workflow is prepared. Add N8N_WEBHOOK_URL and AUTOMATION_SHARED_SECRET to enable explicit dispatch.',
-    },
-  };
-}
 
 interface ProbePayload {
   status: 'PASS' | 'FAIL' | 'REVIEW_REQUIRED';
