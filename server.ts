@@ -4,10 +4,10 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import multer from 'multer';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { GoogleGenAI, Type } from '@google/genai';
+import { runGeminiStructuredProbe } from './server/geminiProbe.ts';
 import { handleSessionChatTurn } from './server/chat.ts';
 import { IngestionError, MAX_ZIP_BYTES } from './server/ingest.ts';
-import { getActiveGeminiModel, sanitizeLlmError } from './server/llm.ts';
+import { getActiveGeminiModel } from './server/llm.ts';
 import {
   PipelineError,
   recheckCorrectedDocumentInSession,
@@ -34,7 +34,6 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = Number(process.env.PORT || 3000);
-const PROBE_TIMEOUT_MS = 20_000;
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -63,116 +62,6 @@ function getIntegrationBoundaries(): IntegrationBoundaries {
       : 'Configure AUTOMATION_SHARED_SECRET to enable authorized n8n dispatch.',
   },
   };
-}
-
-interface ProbePayload {
-  status: 'PASS' | 'FAIL' | 'REVIEW_REQUIRED';
-  summary: string;
-  verifiedCitation: boolean;
-}
-
-function validateProbePayload(obj: unknown): obj is ProbePayload {
-  if (!obj || typeof obj !== 'object') return false;
-  const rec = obj as Record<string, unknown>;
-  const validStatus =
-    rec.status === 'PASS' || rec.status === 'FAIL' || rec.status === 'REVIEW_REQUIRED';
-  return (
-    validStatus &&
-    typeof rec.summary === 'string' &&
-    rec.summary.trim().length > 0 &&
-    typeof rec.verifiedCitation === 'boolean'
-  );
-}
-
-async function runGeminiStructuredProbe(modelName = getActiveGeminiModel()) {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey || !apiKey.trim()) {
-    return {
-      ok: false as const,
-      category: 'missing_key' as const,
-      httpStatus: 503,
-      model: modelName,
-      latencyMs: 0,
-      message: 'GEMINI_API_KEY is not configured in the server environment.',
-    };
-  }
-
-  const ai = new GoogleGenAI({
-    apiKey,
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build',
-      },
-    },
-  });
-
-  const startedAt = Date.now();
-  let timer: ReturnType<typeof setTimeout> | undefined;
-
-  try {
-    const response = await Promise.race([
-      ai.models.generateContent({
-        model: modelName,
-        contents:
-          'Synthetic probe (no private documents): Requirement R0 states "Supplier must hold an active GST registration." ' +
-          'Evidence E0 states "GSTIN registration status: Active." Classify status as PASS, FAIL, or REVIEW_REQUIRED with a 1-sentence summary.',
-        config: {
-          systemInstruction:
-            'You are a strict tender-compliance JSON classifier. Return only valid JSON matching the requested schema.',
-          responseMimeType: 'application/json',
-          responseSchema: {
-            type: Type.OBJECT,
-            properties: {
-              status: { type: Type.STRING },
-              summary: { type: Type.STRING },
-              verifiedCitation: { type: Type.BOOLEAN },
-            },
-            required: ['status', 'summary', 'verifiedCitation'],
-          },
-        },
-      }),
-      new Promise<never>((_, reject) => {
-        timer = setTimeout(
-          () => reject(new Error('Probe timeout exceeded')),
-          PROBE_TIMEOUT_MS
-        );
-      }),
-    ]);
-
-    const latencyMs = Date.now() - startedAt;
-    const rawText = (response.text ?? '').trim();
-    const parsed = JSON.parse(rawText);
-    if (!validateProbePayload(parsed)) {
-      return {
-        ok: false as const,
-        category: 'invalid_json_schema' as const,
-        httpStatus: 502,
-        model: modelName,
-        latencyMs,
-        message: 'Gemini JSON output failed strict schema validation.',
-      };
-    }
-
-    return {
-      ok: true as const,
-      model: modelName,
-      latencyMs,
-      data: parsed,
-    };
-  } catch (err) {
-    const latencyMs = Date.now() - startedAt;
-    const mapped = sanitizeLlmError(err);
-    return {
-      ok: false as const,
-      category: mapped.category,
-      httpStatus: mapped.httpStatus,
-      model: modelName,
-      latencyMs,
-      message: mapped.message,
-    };
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
 }
 
 export function createApiRouter() {
